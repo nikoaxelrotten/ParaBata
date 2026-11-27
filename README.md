@@ -7,8 +7,8 @@ VST3 **solo para Windows** que separa una pista de bateria (estereo o dual mono)
 No usa IA: la separacion es por DSP.
 1. La senal se parte en 6 bandas (cruces Linkwitz-Riley).
 2. Se detecta cada golpe y se clasifica segun como reparte su energia entre las bandas.
-3. El audio va con una latencia fija (40 ms, la reporta al DAW) y cada golpe abre su pieza justo cuando llega; el **Tail** de cada pieza dice cuanto tiempo queda abierta.
+3. De cada golpe se mide su espectro (fundamental, brillo, relacion graves/agudos), restando lo que ya sonaba antes (colas de otros golpes). El audio va con una latencia fija (~55 ms, la reporta al DAW) y cada golpe abre su pieza justo cuando llega; el **Tail** de cada pieza dice cuanto tiempo queda abierta.
 
 Funciona mejor con baterias grabadas o programadas con poco sangrado. Limites conocidos: golpes simultaneos (por ejemplo kick + hi-hat) se asignan a una sola pieza; ride y crash comparten Cymbals; con mezclas completas (con bajo, guitarras) la separacion no es confiable.
 
-Controles globales: **SENS** (sensibilidad), **FOCUS** (cuanto se aparta lo que no es golpe), **KICK<>TOM** y **HAT<>CYM** (ajustan la frontera entre esas piezas segun tu bateria) y **VELOCITY** (cuanto influye la fuerza del golpe en el sample). Compilacion: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` y `cmake --build build --config Release`; GitHub Actions compila el VST3 de Windows en cada push.
+Controles globales: **SENS** (sensibilidad), **FOCUS** (cuanto se aparta lo que no es golpe), **KICK<>TOM**, **TOM<>SNARE** y **HAT<>CYM** (ajustan en que frecuencia cae la frontera entre esas piezas segun tu bateria) y **VELOCITY** (cuanto influye la fuerza del golpe en el sample). Compilacion: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release` y `cmake --build build --config Release`; GitHub Actions compila el VST3 de Windows en cada push.

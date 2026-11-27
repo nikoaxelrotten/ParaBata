@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <vector>
 
@@ -86,6 +87,32 @@ struct BandSplit
     }
 };
 
+// FFT radix-2 simple (se usa solo para analizar cada golpe, no en el camino del audio)
+struct Fft
+{
+    int n = 0;
+    std::vector<std::complex<double>> tw;
+    std::vector<int> rev;
+    void init (int size)
+    {
+        n = size; tw.resize ((size_t) n / 2); rev.assign ((size_t) n, 0);
+        int lg = 0; while ((1 << lg) < n) ++lg;
+        for (int i = 0; i < n; ++i) { int r = 0; for (int b = 0; b < lg; ++b) if (i & (1 << b)) r |= 1 << (lg - 1 - b); rev[(size_t) i] = r; }
+        for (int i = 0; i < n / 2; ++i) tw[(size_t) i] = std::polar (1.0, -2.0 * 3.14159265358979323846 * i / n);
+    }
+    void run (std::vector<std::complex<double>>& a) const
+    {
+        for (int i = 0; i < n; ++i) if (i < rev[(size_t) i]) std::swap (a[(size_t) i], a[(size_t) rev[(size_t) i]]);
+        for (int len = 2; len <= n; len <<= 1)
+            for (int i = 0; i < n; i += len)
+                for (int j = 0; j < len / 2; ++j)
+                {
+                    const auto u = a[(size_t) (i + j)], v = a[(size_t) (i + j + len / 2)] * tw[(size_t) (j * (n / len))];
+                    a[(size_t) (i + j)] = u + v; a[(size_t) (i + j + len / 2)] = u - v;
+                }
+    }
+};
+
 struct Hit { int offset; int cls; float vel; };     // golpe detectado: posicion dentro del bloque, pieza y velocidad (0..1)
 
 struct SepParams
@@ -94,6 +121,7 @@ struct SepParams
     float focus = 5.0f;                             // 0..10: cuanto se separa lo que no es golpe ("Other")
     float kickTom = 5.0f;                           // 0..10: frontera Kick / Toms (mas alto = mas golpes graves se toman como kick)
     float hatCym = 5.0f;                            // 0..10: frontera Hi-Hat / Cymbals (mas alto = mas golpes se toman como hi-hat)
+    float tomSnare = 5.0f;                          // 0..10: frontera Toms / Snare en frecuencia (mas alto = hasta frecuencias mas altas se toman como toms)
     float tailMs[kHitStems] = { 120.0f, 160.0f, 350.0f, 60.0f, 1800.0f };   // cuanto dura abierta cada pieza
 };
 
@@ -105,17 +133,22 @@ public:
     void prepare (double sr)
     {
         fs = sr;
-        lat = (int) std::lround (sr * 0.040);
+        fftN = 2048; while ((double) fftN < 0.040 * sr) fftN <<= 1;
+        fft.init (fftN);
+        lat = fftN + (int) std::lround (0.012 * sr);                    // ventana de analisis + margen
         const double fc[kBands - 1] = { 80.0, 160.0, 350.0, 2000.0, 6000.0 };
-        for (auto& s : split) s.set (fc, sr);
+        for (auto& s2 : split) s2.set (fc, sr);
         delayLen = lat + 1;
         for (int c = 0; c < 2; ++c) for (int b = 0; b < kBands; ++b) dl[c][b].assign ((size_t) delayLen, 0.0f);
+        ring.assign (16384, 0.0f);
+        win.resize ((size_t) fftN);
+        for (int i = 0; i < fftN; ++i) win[(size_t) i] = 0.5 - 0.5 * std::cos (2.0 * 3.14159265358979323846 * (i + 0.5) / fftN);
+        buf.resize ((size_t) fftN); buf2.resize ((size_t) fftN);
         envAtk = 1.0 - std::exp (-1.0 / (0.0005 * sr));
         envRel = 1.0 - std::exp (-1.0 / (0.010 * sr));
         baseAtk = 1.0 - std::exp (-1.0 / (0.012 * sr));
         baseRel = 1.0 - std::exp (-1.0 / (0.12 * sr));
-        capLen = (int) std::lround (0.020 * sr);
-        refrac = (int) std::lround (0.045 * sr);
+        refrac = (int) std::lround (0.025 * sr);
         reset();
     }
 
@@ -123,9 +156,10 @@ public:
     {
         for (auto& s : split) s.reset();
         for (int c = 0; c < 2; ++c) for (int b = 0; b < kBands; ++b) std::fill (dl[c][b].begin(), dl[c][b].end(), 0.0f);
-        for (int b = 0; b < kBands; ++b) env[b] = base[b] = peak[b] = base0[b] = 0.0;
+        for (int b = 0; b < kBands; ++b) env[b] = base[b] = 0.0;
         for (auto& a : act) a = 0.0;
-        n = 0; capturing = false; capLeft = 0; sinceHit = 1 << 30; nPending = 0;
+        n = 0; nCaps = 0; sinceHit = 1 << 30; nPending = 0;
+        std::fill (ring.begin(), ring.end(), 0.0f);
         for (auto& c : hitCount) c = 0;
     }
 
@@ -168,33 +202,19 @@ public:
             }
 
             // ---- deteccion y clasificacion de golpes (sin retardo)
+            ring[(size_t) (t & 16383)] = 0.5f * (xl + xr);
             ++sinceHit;
-            if (! capturing)
+            if (sinceHit > refrac && nCaps < kMaxCaps)
             {
-                if (sinceHit > refrac)
-                {
-                    bool onset = false;
-                    for (int b = 0; b < kBands; ++b)
-                        if (env[b] > ratioThr * base[b] + 0.0015) { onset = true; break; }
-                    if (onset)
-                    {
-                        capturing = true; capLeft = capLen; n0 = t;
-                        for (int b = 0; b < kBands; ++b) { peak[b] = env[b]; base0[b] = base[b]; }
-                        capCount = 1;
-                    }
-                }
+                bool onset = false;
+                for (int b = 0; b < kBands; ++b)
+                    if (env[b] > ratioThr * base[b] + 0.0015) { onset = true; break; }
+                if (onset) { caps[nCaps++] = t; sinceHit = 0; }
             }
-            else
+            for (int k = 0; k < nCaps;)
             {
-                for (int b = 0; b < kBands; ++b) peak[b] += env[b];      // se promedia la envolvente en la ventana
-                ++capCount;
-                if (--capLeft <= 0)
-                {
-                    for (int b = 0; b < kBands; ++b) peak[b] /= (double) capCount;
-                    capturing = false;
-                    sinceHit = 0;
-                    classify (t, p);
-                }
+                if (t - caps[k] >= fftN) { classify (caps[k], p); caps[k] = caps[--nCaps]; }
+                else ++k;
             }
 
             // ---- activacion de golpes en el instante en que llegan al audio retardado
@@ -242,51 +262,95 @@ public:
 private:
     struct Pending { int64_t due; int cls; float strength; float vel; };
 
-    void classify (int64_t now, const SepParams& sp)
+    // Analisis espectral del golpe que empezo en n0 (ventana de fftN muestras desde un poco antes del inicio)
+    void classify (int64_t onset, const SepParams& sp)
     {
-        static const double cal[kBands] = { 1.0, 1.0, 1.0, 1.1, 1.3, 1.6 };      // compensacion suave de la caida espectral
-        double x[kBands], S = 0.0;
-        for (int b = 0; b < kBands; ++b) { x[b] = std::max (0.0, peak[b] - base0[b]) * cal[b]; S += x[b]; }
-        if (S < 1e-4) return;
-        double q[kBands];
-        for (int b = 0; b < kBands; ++b) q[b] = x[b] / S;
-#ifdef PB_DEBUG
-        debug.push_back ({ (double) n0, q[0], q[1], q[2], q[3], q[4], q[5] });
-#endif
-        const double sub = q[0], low = q[1], lmid = q[2], mid = q[3], hi = q[4], air = q[5], hiAll = hi + air;
-        const double kt = 2.6 - 0.16 * sp.kickTom;                       // low/sub: por debajo = kick, por encima = toms (5 -> 1.8)
-        const double hc = 0.30 - 0.020 * sp.hatCym;                      // fraccion de mid+hi: por debajo = hat, por encima = cymbal (5 -> 0.20)
-        const double mh = mid + hi;
-        const double ratio = low / (sub + 1e-9);
+        const int64_t start = onset - (int64_t) std::lround (0.002 * fs);
+        std::vector<std::complex<double>>& a = buf;
+        for (int i = 0; i < fftN; ++i)
+        {
+            const int64_t idx = start + i;
+            a[(size_t) i] = (idx < 0 ? 0.0 : (double) ring[(size_t) (idx & 16383)]) * win[(size_t) i];
+        }
+        fft.run (a);
+        // ventana anterior al golpe: lo que ya sonaba (colas de otros golpes) se resta del espectro
+        auto& a2 = buf2;
+        for (int i = 0; i < fftN; ++i)
+        {
+            const int64_t idx = start - fftN + i;
+            a2[(size_t) i] = (idx < 0 ? 0.0 : (double) ring[(size_t) (idx & 16383)]) * win[(size_t) i];
+        }
+        fft.run (a2);
+        const double df = fs / fftN;
+        auto bin = [&] (double f) { return std::min (fftN / 2 - 1, std::max (1, (int) std::lround (f / df))); };
+        const int k30 = bin (30.0), k95 = bin (70.0 + 6.0 * sp.kickTom), k170 = bin (90.0 + 12.0 * sp.tomSnare), k320 = bin (340.0), k350 = bin (350.0);
+        const int k2k = bin (2000.0), k6k = bin (6000.0), k16k = bin (16000.0);
+        double mag[8192];
+        const int nb = std::min (fftN / 2, 8192);
+        for (int k = 0; k < nb; ++k)
+        {
+            const double p1 = std::norm (a[(size_t) k]), p0 = std::norm (a2[(size_t) k]);
+            mag[k] = std::sqrt (std::max (0.0, p1 - 0.9 * p0));
+        }
+        auto peakIn = [&] (int lo, int hi) { double m = 0.0; for (int k = lo; k < hi; ++k) m = std::max (m, mag[k]); return m; };
+        auto energy = [&] (int lo, int hi) { double e = 0.0; for (int k = lo; k < hi; ++k) e += mag[k] * mag[k]; return e; };
+        const double Pk = peakIn (k30, k95), Pt = peakIn (k95, k170), Ps = peakIn (k170, k320);
+        const double maxP = std::max ({ Pk, Pt, Ps, 1e-12 });
+        const double Etot = energy (k30, k16k) + 1e-18;
+        double cn = 0.0, cd = 1e-18; for (int k = k30; k < k16k; ++k) { cn += k * df * mag[k] * mag[k]; cd += mag[k] * mag[k]; }
+        const double cent = cn / cd;
+        // fundamental: el pico mas grave que no sea mucho menor que el maximo (entre 35 y 340 Hz)
+        double f0 = 0.0;
+        for (int k = k30 + 1; k < k320; ++k)
+            if (mag[k] >= 0.5 * maxP && mag[k] >= mag[k - 1] && mag[k] >= mag[k + 1]) { f0 = k * df; break; }
+        const double hfAmp = std::sqrt (energy (bin (1200.0), k16k) / Etot);
+        const double hfShare = energy (k2k, k16k) / Etot, airShare = energy (k6k, k16k) / Etot, lowShare = energy (k30, k350) / Etot;
+        const double mh = energy (k350, k6k) / Etot;
+        const double hc = 0.30 - 0.020 * sp.hatCym;
         double m[kHitStems];
-        m[Kick]  = smoothstep (sub + low, 0.40, 0.60) * (1.0 - smoothstep (ratio, kt - 0.35, kt + 0.35)) * (1.0 - smoothstep (lmid, 0.28, 0.45));
-        m[Toms]  = smoothstep (sub + low + lmid, 0.60, 0.80) * smoothstep (ratio, kt - 0.35, kt + 0.35) * (1.0 - smoothstep (hiAll, 0.20, 0.40));
-        m[Snare] = smoothstep (low + lmid, 0.08, 0.20) * smoothstep (hiAll, 0.15, 0.35) * (1.0 - smoothstep (sub + low, 0.45, 0.70));
-        m[Hat]   = smoothstep (air, 0.35, 0.60) * (1.0 - smoothstep (mh, hc - 0.05, hc + 0.05)) * (1.0 - smoothstep (lmid, 0.10, 0.25));
-        m[Cym]   = smoothstep (hiAll, 0.40, 0.65) * smoothstep (mh, hc - 0.05, hc + 0.05) * (1.0 - smoothstep (low + lmid, 0.05, 0.14));
-        double total = 0.0;
-        for (int b = 0; b < kBands; ++b) total += peak[b];
-        const float vel = (float) clampd ((20.0 * std::log10 (total + 1e-9) + 40.0) / 34.0, 0.0, 1.0);
+        // graves: kick por la fundamental baja; toms y snare se separan por la fundamental (frontera ajustable) y el brillo
+        const double kB = 70.0 + 6.0 * sp.kickTom, tsB = 90.0 + 12.0 * sp.tomSnare;
+        const double gate = smoothstep (lowShare, 0.10, 0.25);
+        m[Kick]  = smoothstep (Pk / maxP, 0.35, 0.60) * gate;
+        const double notKick = 1.0 - m[Kick];
+        const double bright = smoothstep (hfAmp, 0.12, 0.25);
+        const double highF0 = smoothstep (f0, tsB - 10.0, tsB + 10.0);
+        const double inTom = smoothstep (f0, kB - 5.0, kB + 5.0);
+        m[Toms]  = inTom * (1.0 - highF0) * (1.0 - bright) * notKick * gate;
+        m[Snare] = std::min (1.0, highF0 + (1.0 - highF0) * inTom * bright) * notKick * gate;
+        m[Hat]   = smoothstep (airShare, 0.30, 0.55) * (1.0 - smoothstep (mh, hc - 0.05, hc + 0.05)) * (1.0 - smoothstep (lowShare, 0.05, 0.15));
+        m[Cym]   = smoothstep (hfShare, 0.45, 0.70) * smoothstep (mh, hc - 0.05, hc + 0.05) * (1.0 - smoothstep (lowShare, 0.06, 0.18));
+        // velocidad: amplitud RMS de la ventana
+        double rms = 0.0; for (int i = 0; i < fftN; ++i) { const int64_t idx = start + i; const double v = idx < 0 ? 0.0 : (double) ring[(size_t) (idx & 16383)]; rms += v * v; }
+        rms = std::sqrt (rms / fftN);
+        const float vel = (float) clampd ((20.0 * std::log10 (rms * 3.0 + 1e-9) + 40.0) / 34.0, 0.0, 1.0);
+#ifdef PB_DEBUG
+        debug.push_back ({ (double) onset, Pk / maxP, Pt / maxP, Ps / maxP, cent, lowShare, airShare, m[0], m[1], m[2], m[3], m[4], rms, f0 });
+#endif
+        if (rms < 0.004) return;                                  // demasiado bajo: ruido de fondo, no un golpe
         const double thr = 0.35 - 0.1 * (sp.sensitivity / 10.0 - 0.5);
         for (int c = 0; c < kHitStems; ++c)
             if (m[c] >= thr && nPending < kMaxPending)
-                pending[nPending++] = { n0 + lat - (int64_t) std::lround (0.001 * fs), c, (float) clampd (m[c] * 1.5, 0.0, 1.0), vel };
-        (void) now;
+                pending[nPending++] = { onset + lat - (int64_t) std::lround (0.001 * fs), c, (float) clampd (m[c] * 1.5, 0.0, 1.0), vel };
     }
 
 #ifdef PB_DEBUG
 public:
-    std::vector<std::array<double, 7>> debug;
+    std::vector<std::array<double, 14>> debug;
 private:
 #endif
     static constexpr int kMaxPending = 64;
     double fs = 48000.0;
-    int capCount = 0, lat = 1200, delayLen = 1201, capLen = 336, refrac = 1440, capLeft = 0, sinceHit = 0, nPending = 0;
+    static constexpr int kMaxCaps = 8;
+    int fftN = 2048, lat = 2624, delayLen = 2625, refrac = 1200, sinceHit = 0, nPending = 0, nCaps = 0;
     int hitCount[kStems] = { 0 };
-    int64_t n = 0, n0 = 0;
-    bool capturing = false;
+    int64_t n = 0, caps[kMaxCaps] = { 0 };
+    Fft fft;
+    std::vector<float> ring;
+    std::vector<double> win;
+    std::vector<std::complex<double>> buf, buf2;
     double envAtk = 0.04, envRel = 0.002, baseAtk = 0.0001, baseRel = 0.0001;
-    double env[kBands] = { 0 }, base[kBands] = { 0 }, peak[kBands] = { 0 }, base0[kBands] = { 0 };
+    double env[kBands] = { 0 }, base[kBands] = { 0 };
     double act[kHitStems] = { 0 }, target[kHitStems] = { 0 };
     BandSplit split[2];
     std::vector<float> dl[2][kBands];

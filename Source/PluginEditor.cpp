@@ -227,16 +227,16 @@ public:
             strips[(size_t) i]->setBounds (24 + i * 193, 100, 186, 532);
             addAndMakeVisible (*strips[(size_t) i]);
         }
-        const char* id[] = { "sens", "focus", "kicktom", "hatcym", "velsens" };
-        const char* nm[] = { "SENS", "FOCUS", "KICK<>TOM", "HAT<>CYM", "VELOCITY" };
-        for (int i = 0; i < 5; ++i)
+        const char* id[] = { "sens", "focus", "kicktom", "tomsnare", "hatcym", "velsens" };
+        const char* nm[] = { "SENS", "FOCUS", "KICK<>TOM", "TOM<>SNARE", "HAT<>CYM", "VELOCITY" };
+        for (int i = 0; i < 6; ++i)
         {
             knobs[(size_t) i] = std::make_unique<KnobUnit> (p.apvts, id[i], nm[i], 44, kAccent, fmt1);
-            knobs[(size_t) i]->setBounds (330 + i * 92, 6, 88, knobs[(size_t) i]->totalHeight());
+            knobs[(size_t) i]->setBounds (292 + i * 84, 6, 82, knobs[(size_t) i]->totalHeight());
             addAndMakeVisible (*knobs[(size_t) i]);
         }
         midi.setButtonText ("MIDI OUT"); midi.setClickingTogglesState (true); midi.setColour (juce::TextButton::buttonOnColourId, kAccent);
-        midi.setBounds (806, 30, 90, 30); addAndMakeVisible (midi);
+        midi.setBounds (812, 30, 90, 30); addAndMakeVisible (midi);
         midiAtt = std::make_unique<APVTS::ButtonAttachment> (p.apvts, "midiout", midi);
         const float scales[] = { 0.75f, 1.0f, 1.25f, 1.5f }; const char* labels[] = { "75%", "100%", "125%", "150%" };
         for (int i = 0; i < 4; ++i)
@@ -271,14 +271,14 @@ public:
         g.drawText ("DRUM STEM SEPARATOR  -  VST3", 28, 46, 240, 14, juce::Justification::centredLeft);
         g.setFont (fnt (10.0f)); g.setColour (juce::Colour (0xff6c727c));
         g.drawText (juce::String::fromUTF8 ("Salidas: Mix + una por pieza (activalas en tu DAW)"), 28, 64, 290, 14, juce::Justification::centredLeft);
-        g.drawText ("ESCALA", 866, 40, 66, 18, juce::Justification::centredRight);
+        g.drawText ("ESCALA", 878, 40, 54, 18, juce::Justification::centredRight);
     }
 
 private:
     void timerCallback() override { for (auto& s : strips) s->update(); }
     std::function<void (float)> setScale;
     std::array<std::unique_ptr<StripBox>, pb::kStems> strips;
-    std::array<std::unique_ptr<KnobUnit>, 5> knobs;
+    std::array<std::unique_ptr<KnobUnit>, 6> knobs;
     juce::TextButton midi;
     std::unique_ptr<APVTS::ButtonAttachment> midiAtt;
     std::array<juce::TextButton, 4> scaleButtons;

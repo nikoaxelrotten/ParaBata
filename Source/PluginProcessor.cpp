@@ -18,6 +18,7 @@ AudioProcessorValueTreeState::ParameterLayout ParaBataProcessor::createParameter
     f ("sens",    "Sensitivity", 0.0f, 10.0f, 5.0f, 0.1f, 1.0f, "");
     f ("focus",   "Focus",       0.0f, 10.0f, 5.0f, 0.1f, 1.0f, "");
     f ("kicktom", "Kick-Toms",   0.0f, 10.0f, 5.0f, 0.1f, 1.0f, "");
+    f ("tomsnare", "Toms-Snare", 0.0f, 10.0f, 5.0f, 0.1f, 1.0f, "");
     f ("hatcym",  "Hat-Cymbals", 0.0f, 10.0f, 5.0f, 0.1f, 1.0f, "");
     f ("velsens", "Velocity",    0.0f, 10.0f, 7.0f, 0.1f, 1.0f, "");
     b ("midiout", "MIDI Out", false);
@@ -192,7 +193,7 @@ void ParaBataProcessor::processChunk (int start, int n, AudioBuffer<float>& buff
     }
 
     pb::SepParams sp;
-    sp.sensitivity = param ("sens"); sp.focus = param ("focus"); sp.kickTom = param ("kicktom"); sp.hatCym = param ("hatcym");
+    sp.sensitivity = param ("sens"); sp.focus = param ("focus"); sp.kickTom = param ("kicktom"); sp.hatCym = param ("hatcym"); sp.tomSnare = param ("tomsnare");
     for (int c = 0; c < pb::kHitStems; ++c) sp.tailMs[c] = param (String (kStemIds[c]) + "_tail");
     float* oL[pb::kStems]; float* oR[pb::kStems];
     for (int c = 0; c < pb::kStems; ++c) { oL[c] = stemL[c].data(); oR[c] = stemR[c].data(); }
