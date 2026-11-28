@@ -119,9 +119,9 @@ struct SepParams
 {
     float sensitivity = 5.0f;                       // 0..10: sensibilidad de deteccion
     float focus = 5.0f;                             // 0..10: cuanto se separa lo que no es golpe ("Other")
-    float kickTom = 5.0f;                           // 0..10: frontera Kick / Toms (mas alto = mas golpes graves se toman como kick)
-    float hatCym = 5.0f;                            // 0..10: frontera Hi-Hat / Cymbals (mas alto = mas golpes se toman como hi-hat)
-    float tomSnare = 5.0f;                          // 0..10: frontera Toms / Snare en frecuencia (mas alto = hasta frecuencias mas altas se toman como toms)
+    float kickTom = 5.0f;                           // 0..10: 0 = mas golpes graves se toman como Kick, 10 = mas como Toms (frontera 130 -> 70 Hz)
+    float hatCym = 5.0f;                            // 0..10: 0 = mas golpes se toman como Hi-Hat, 10 = mas como Cymbals
+    float tomSnare = 5.0f;                          // 0..10: 0 = mas golpes se toman como Toms, 10 = mas como Snare (frontera 210 -> 90 Hz)
     float tailMs[kHitStems] = { 120.0f, 160.0f, 350.0f, 60.0f, 1800.0f };   // cuanto dura abierta cada pieza
 };
 
@@ -283,7 +283,8 @@ private:
         fft.run (a2);
         const double df = fs / fftN;
         auto bin = [&] (double f) { return std::min (fftN / 2 - 1, std::max (1, (int) std::lround (f / df))); };
-        const int k30 = bin (30.0), k95 = bin (70.0 + 6.0 * sp.kickTom), k170 = bin (90.0 + 12.0 * sp.tomSnare), k320 = bin (340.0), k350 = bin (350.0);
+        const int k30 = bin (30.0), k95 = bin (130.0 - 6.0 * sp.kickTom), k320 = bin (340.0), k350 = bin (350.0);
+        const int k170 = std::min (k320 - 2, std::max (k95 + 2, bin (210.0 - 12.0 * sp.tomSnare)));
         const int k2k = bin (2000.0), k6k = bin (6000.0), k16k = bin (16000.0);
         double mag[8192];
         const int nb = std::min (fftN / 2, 8192);
@@ -309,7 +310,7 @@ private:
         const double hc = 0.30 - 0.020 * sp.hatCym;
         double m[kHitStems];
         // graves: kick por la fundamental baja; toms y snare se separan por la fundamental (frontera ajustable) y el brillo
-        const double kB = 70.0 + 6.0 * sp.kickTom, tsB = 90.0 + 12.0 * sp.tomSnare;
+        const double kB = 130.0 - 6.0 * sp.kickTom, tsB = 210.0 - 12.0 * sp.tomSnare;   // hacia KICK / SNARE (izquierda = 0) suben las fronteras
         const double gate = smoothstep (lowShare, 0.10, 0.25);
         m[Kick]  = smoothstep (Pk / maxP, 0.35, 0.60) * gate;
         const double notKick = 1.0 - m[Kick];
